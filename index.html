@@ -104,12 +104,13 @@
   .proc-steps{ font-size:12.5px; color:var(--ink-soft); text-align:left; line-height:1.9; }
 
   /* ================= DASHBOARD & DRAWER ================= */
-  .toolbar{ display:flex; gap:10px; margin-bottom:24px; align-items:center; }
+  .toolbar{ display:flex; flex-wrap:wrap; gap:10px; margin-bottom:24px; align-items:center; }
   .search-input{
-    flex:1; border:1px solid var(--line); background:var(--paper-raised);
+    flex:1 1 200px; min-width:160px; border:1px solid var(--line); background:var(--paper-raised);
     border-radius:20px; padding:9px 16px; font-size:13.5px; color:var(--ink);
   }
   .search-input:focus{ outline:none; border-color:var(--ink); }
+  .toolbar .btn{ flex:0 0 auto; white-space:nowrap; }
 
   .sync-bar{
     display:flex; align-items:center; justify-content:space-between;
@@ -142,6 +143,12 @@
   .cat-row:hover{ background:var(--line); color:var(--ink); }
   .cat-row.active{ background:var(--ink); color:var(--paper-raised); font-weight:500; }
   .cat-row .n{ font-family:'IBM Plex Mono',monospace; font-size:11px; opacity:0.75; }
+  .cat-row-right{ display:flex; align-items:center; gap:4px; }
+  .cat-more-btn{
+    background:none; border:none; color:inherit; opacity:0.55; font-size:14px;
+    line-height:1; padding:2px 5px; border-radius:50%; flex-shrink:0;
+  }
+  .cat-more-btn:hover{ opacity:1; background:rgba(0,0,0,0.1); }
 
   .cat-section{ margin-bottom:30px; }
   .cat-head{ display:flex; align-items:baseline; justify-content:space-between; margin-bottom:12px; border-bottom:1px solid var(--line); padding-bottom:6px; }
@@ -505,12 +512,60 @@
   }
 
   /* =========================================================
+     CATEGORY (SHELF) MANAGEMENT
+  ========================================================= */
+  function renameCategory(oldName){
+    var newName = prompt("Rename shelf:", oldName);
+    if(newName === null) return;
+    newName = newName.trim();
+    if(!newName || newName === oldName) return;
+
+    var idx = state.categories.indexOf(oldName);
+    var targetExists = state.categories.indexOf(newName) !== -1;
+
+    if(idx !== -1){
+      if(targetExists){
+        state.categories.splice(idx, 1); // merging into an existing shelf
+      } else {
+        state.categories[idx] = newName;
+      }
+    } else if(!targetExists){
+      state.categories.push(newName);
+    }
+
+    state.bookmarks.forEach(function(b){ if(b.category === oldName) b.category = newName; });
+    if(activeCategory === oldName) activeCategory = newName;
+
+    saveState();
+    renderDashboard();
+  }
+
+  function deleteCategory(name){
+    var count = state.bookmarks.filter(function(b){ return b.category === name; }).length;
+    var msg = count > 0
+      ? ("\""+name+"\" has "+count+" bookmark(s). Delete this shelf and move them to \"Uncategorized\"?")
+      : ("Delete empty shelf \""+name+"\"?");
+    if(!confirm(msg)) return;
+
+    if(count > 0){
+      if(state.categories.indexOf("Uncategorized") === -1) state.categories.push("Uncategorized");
+      state.bookmarks.forEach(function(b){ if(b.category === name) b.category = "Uncategorized"; });
+    }
+    state.categories = state.categories.filter(function(c){ return c !== name; });
+    if(activeCategory === name) activeCategory = "All";
+
+    saveState();
+    renderDashboard();
+  }
+
+  /* =========================================================
      SCREEN: DASHBOARD & DRAWER MANAGEMENT
   ========================================================= */
   var activeCategory = "All";
   var searchQuery = "";
   var isDrawerOpen = false;
   var activeContextMenu = null; // { id, x, y }
+  var activeCatMenu = null; // { name, x, y }
 
   function categoriesWithCounts(){
     var counts = {};
@@ -542,7 +597,9 @@
     categoriesWithCounts().forEach(function(c){
       drawerListContainer.appendChild(h(
         '<div class="cat-row '+(activeCategory===c.name?"active":"")+'" data-cat="'+escapeHtml(c.name)+'">'+
-          '<span>'+escapeHtml(c.name)+'</span><span class="n">'+c.count+'</span>'+
+          '<span>'+escapeHtml(c.name)+'</span>'+
+          '<span class="cat-row-right"><span class="n">'+c.count+'</span>'+
+          '<button class="cat-more-btn" data-cat-more="'+escapeHtml(c.name)+'" aria-label="Shelf options">⋮</button></span>'+
         '</div>'
       ));
     });
@@ -655,6 +712,9 @@
     if(activeContextMenu){
       renderContextMenuModal(wrap);
     }
+    if(activeCatMenu){
+      renderCatMenuModal(wrap);
+    }
 
     wireDashboardEvents(wrap);
   }
@@ -708,6 +768,15 @@
       row.addEventListener("click", function(){
         activeCategory = row.getAttribute("data-cat");
         toggleDrawer(false);
+        renderDashboard();
+      });
+    });
+
+    root.querySelectorAll(".cat-more-btn").forEach(function(btn){
+      btn.addEventListener("click", function(e){
+        e.stopPropagation();
+        var rect = btn.getBoundingClientRect();
+        activeCatMenu = { name: btn.getAttribute("data-cat-more"), x: rect.left, y: rect.bottom + 6 };
         renderDashboard();
       });
     });
@@ -794,7 +863,64 @@
         activeContextMenu = null;
         renderDashboard();
       }
+      if(activeCatMenu && !e.target.closest(".context-menu") && !e.target.closest(".cat-more-btn")){
+        activeCatMenu = null;
+        renderDashboard();
+      }
     }, { once: true });
+  }
+
+  function renderCatMenuModal(root){
+    var cmData = activeCatMenu;
+    var name = cmData.name;
+
+    var menu = h(
+      '<div class="context-menu" style="visibility:hidden; top:'+cmData.y+'px; left:'+cmData.x+'px;">'+
+        '<div class="cm-label mono">Shelf Actions</div>'+
+        '<div class="cm-item" data-cat-action="rename">✏️ Rename Shelf</div>'+
+        '<div class="cm-item danger" data-cat-action="delete">🗑️ Delete Shelf</div>'+
+        '<div class="cm-item" data-cat-action="cancel" style="color:var(--ink-soft);">❌ Cancel</div>'+
+      '</div>'
+    );
+    root.appendChild(menu);
+
+    setTimeout(function(){
+      var rect = menu.getBoundingClientRect();
+      var vw = window.innerWidth;
+      var vh = window.innerHeight;
+
+      var finalX = cmData.x;
+      var finalY = cmData.y;
+
+      if (rect.right > vw - 16) {
+        finalX = Math.max(16, vw - rect.width - 16);
+      }
+      if (rect.bottom > vh - 16) {
+        finalY = Math.max(16, cmData.y - rect.height - 10);
+      }
+
+      menu.style.left = finalX + "px";
+      menu.style.top = finalY + "px";
+      menu.style.visibility = "visible";
+    }, 0);
+
+    menu.querySelector('[data-cat-action="rename"]').addEventListener("click", function(e){
+      e.stopPropagation();
+      activeCatMenu = null;
+      renameCategory(name);
+    });
+
+    menu.querySelector('[data-cat-action="delete"]').addEventListener("click", function(e){
+      e.stopPropagation();
+      activeCatMenu = null;
+      deleteCategory(name);
+    });
+
+    menu.querySelector('[data-cat-action="cancel"]').addEventListener("click", function(e){
+      e.stopPropagation();
+      activeCatMenu = null;
+      renderDashboard();
+    });
   }
 
   function renderContextMenuModal(root){
